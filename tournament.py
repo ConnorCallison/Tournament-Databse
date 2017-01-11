@@ -6,35 +6,38 @@
 import psycopg2
 
 
-def connect():
-    """Connect to the PostgreSQL database.  Returns a database connection."""
-    return psycopg2.connect("dbname=tournament")
+def connect(database_name="tournament"):
+    try:
+        db = psycopg2.connect("dbname={}".format(database_name))
+        cursor = db.cursor()
+        return db, cursor
+    except:
+        print("<error message>")
 
 
 def deleteMatches():
     """Remove all the match records from the database."""
-    connection = connect()
-    c = connection.cursor()
-    c.execute("DELETE FROM Matches;")
-    c.execute("UPDATE Players SET matches = 0;")
-    c.execute("UPDATE Players SET wins = 0;")
+    connection, c = connect()
+
+    c.execute("TRUNCATE Matches CASCADE;")
+
     connection.commit()
     connection.close()
 
 
 def deletePlayers():
     """Remove all the player records from the database."""
-    connection = connect()
-    c = connection.cursor()
-    c.execute("DELETE FROM Players;")
+    connection, c = connect()
+
+    c.execute("TRUNCATE Players CASCADE;")
     connection.commit()
     connection.close()
 
 
 def countPlayers():
     """Returns the number of players currently registered."""
-    connection = connect()
-    c = connection.cursor()
+    connection, c = connect()
+
     c.execute("SELECT count(*) from Players;")
     result = c.fetchone()
     connection.commit()
@@ -51,23 +54,9 @@ def registerPlayer(name):
     Args:
       name: the player's full name (need not be unique).
     """
-    def escapeApostrophe(string_in):
-        if string_in.find("'"):
-            return string_in.replace("'", "")
-        else:
-            return string_in
+    connection, c = connect()
 
-    first_name = escapeApostrophe(name.split(" ")[0])
-
-    if len(name.split(" ")) > 1:
-        last_name = escapeApostrophe(name.split(" ")[1])
-    else:
-        last_name = ""
-
-    connection = connect()
-    c = connection.cursor()
-    c.execute("INSERT INTO Players (player_fname, player_lname) VALUES ('" +
-              first_name + "','" + last_name + "');")
+    c.execute("INSERT INTO Players (player_name) VALUES (%s);", ((name,)))
     connection.commit()
     connection.close()
 
@@ -85,12 +74,24 @@ def playerStandings():
         wins: the number of matches the player has won
         matches: the number of matches the player has played
     """
-    connection = connect()
-    c = connection.cursor()
-    c.execute(
-        ("SELECT p.player_id AS id, p.player_fname || ' ' || p.player_lname AS"
-            " name, p.wins AS wins, p.matches AS matches FROM Players AS p;"))
-    connection.commit()
+    connection, c = connect()
+
+    query = '''SELECT t1.player_id, t1.player_name, coalesce(t4.wins,0) AS wins,
+            coalesce(t4.matches,0) AS matches FROM (SELECT p.player_id AS
+            player_id, p.player_name AS player_name FROM Players AS p) t1
+             LEFT JOIN (SELECT t3.player_id AS player_id,
+             coalesce(t2.wins,0) as wins,
+            t3.matches AS matches FROM (SELECT p.player_id AS player_id,
+            count(match_id) AS matches FROM Players AS p,
+            Matches AS m WHERE
+            m.winner_id = p.player_id OR m.loser_id = p.player_id
+            GROUP BY p.player_id) t3 LEFT JOIN
+            (SELECT p.player_id AS player_id,
+            count(m.winner_id) as wins FROM Players AS p,Matches AS m WHERE
+            m.winner_id = p.player_id GROUP BY p.player_id) t2 ON
+            t2.player_id = t3.player_id) t4 ON t1.player_id = t4.player_id;'''
+
+    c.execute(query)
     result = c.fetchall()
     connection.close()
     return result
@@ -103,14 +104,11 @@ def reportMatch(winner, loser):
       winner:  the id number of the player who won
       loser:  the id number of the player who lost
     """
-    connection = connect()
-    c = connection.cursor()
+    connection, c = connect()
+
     c.execute(
-        ("UPDATE Players SET wins = wins + 1, matches = matches + 1"
-            " WHERE player_id =" + str(winner) + ";"))
-    c.execute(
-        ("UPDATE Players SET matches = matches + 1 "
-            "WHERE player_id =" + str(loser) + ";"))
+        "INSERT INTO Matches (winner_id,loser_id) VALUES (%s,%s);",
+        (winner, loser))
     connection.commit()
     connection.close()
 
@@ -130,13 +128,7 @@ def swissPairings():
         id2: the second player's unique id
         name2: the second player's name
     """
-
-    connection = connect()
-    c = connection.cursor()
-    c.execute("SELECT * FROM Players;")
-    players = c.fetchall()
-    connection.close()
-
+    players = playerStandings()
     pairs = []
     paired = []
 
@@ -144,15 +136,14 @@ def swissPairings():
         if player[0] not in paired:
             for potential_match in players:
                 if potential_match[0] not in paired:
-                    if (player[3] == potential_match[3] and
-                       player[0] != potential_match[0]):
-                            pairs.append([player[0], player[1] +
-                                          " " + player[2],
-                                          potential_match[0],
-                                          potential_match[1] +
-                                          " " + potential_match[2]])
-                            paired.append(player[0])
-                            paired.append(potential_match[0])
-                            break
+                    if (player[2] == potential_match[2] and
+                            player[0] != potential_match[0]):
+                        pairs.append([player[0],
+                                      player[1],
+                                      potential_match[0],
+                                      potential_match[1]])
+                        paired.append(player[0])
+                        paired.append(potential_match[0])
+                        break
 
     return pairs
